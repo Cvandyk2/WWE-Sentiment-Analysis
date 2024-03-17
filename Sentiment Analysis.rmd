@@ -1,0 +1,297 @@
+---
+title: "Homework 2"
+author: "Chance Van Dyke"
+format:
+  html:
+    toc: true
+    toc-location: left
+    self-contained: true
+---
+
+```{r, echo=FALSE}
+library(httr2)
+library(jsonlite)
+library(rvest)
+library(lubridate)
+library(stringr)
+library(dplyr)
+library(tidyr)
+library(tidytext)
+library(magrittr)
+library(sentimentr)
+library(lexicon)
+library(textdata)
+library(textcat)
+library(quanteda)
+library(stm)
+library(tm)
+library(cld2)
+```
+
+
+## Task 1
+
+We are going to return to the table of the top 100 wrestlers: https://www.cagematch.net/?id=2&view=statistics. Specifically, you are going to get the ratings/comments tables for each wrestler.
+
+For loop (ratings page) (not my code, keeping here to learn for future use)
+```{r, echo=FALSE}
+
+
+
+
+
+```
+
+Lapply (comments page, my code)
+```{r}
+#links
+TopWrestlers <- url("https://www.cagematch.net/?id=2&view=statistics")
+
+TopWrestlers <- read_html(TopWrestlers) %>%
+  html_table(header = TRUE) %>%
+  `[[`(1)
+
+TopWrestlers$wrestler_number <- 0
+
+TopWrestlers$wrestler_number <- read_html(url("https://www.cagematch.net/?id=2&view=statistics")) %>%
+  html_elements(("a[href*='?id=2&nr=']")) %>%
+  html_attr("href")
+
+TopWrestlers$wrestler_number <- str_extract(TopWrestlers$wrestler_number, "(?<=nr=)\\d+")
+
+urls <- glue::glue("https://www.cagematch.net/?id=2&nr={TopWrestlers$wrestler_number}&page=99")
+
+# comments
+
+GetComments <- function(urls) {
+  urlc <- url(urls)
+  urln <- url(urls)
+  urlr <- url(urls)
+  WrestlersName <- read_html(urlr)
+  WrestlersName <- html_elements(WrestlersName, ".TextHeader")
+  WrestlersName <- html_text(WrestlersName, ".TextHeader")
+  CommentorName <- read_html(urln)
+  CommentorName <- html_elements(CommentorName, ".CommentHeader")
+  CommentorName <- html_text(CommentorName, ".CommentHeader")
+  WrestlersComment <- read_html(urlc)
+  WrestlersComment <- html_elements(WrestlersComment, ".CommentContents")
+  WrestlersComment <-html_text(WrestlersComment, ".CommentContents")
+  return (cbind.data.frame(WrestlersName,CommentorName,WrestlersComment))
+}
+
+Comments <- lapply(urls, GetComments)
+CombinedTable <- do.call (rbind, Comments)
+
+head(CombinedTable)
+
+```
+
+
+Cleaning Data
+```{r}
+
+CombinedTable$WrestlersRating <- str_extract(CombinedTable$WrestlersComment, "\\[.*\\]")
+CombinedTable$WrestlersRating <- gsub("]", "", CombinedTable$WrestlersRating)
+CombinedTable$WrestlersRating <- gsub("\\[", "", CombinedTable$WrestlersRating)
+CombinedTable$WrestlersRating <- as.numeric(CombinedTable$WrestlersRating)
+CombinedTable$WrestlersComment <- gsub("\\[.*\\]", "", CombinedTable$WrestlersComment)
+CombinedTable$WrestlersComment <- tolower(CombinedTable$WrestlersComment)
+
+CombinedTable <- CombinedTable[,c(1,2,4,3)]
+
+head(CombinedTable)
+
+```
+
+
+Removing non-English comments 1
+```{r}
+# Detect language for each row in the TextColumn
+CombinedTable$language <- sapply(CombinedTable$WrestlersComment, function(text) {
+  result <- textcat(text)
+  return(as.data.frame(result))
+})
+
+# looking at languages
+# unique(CombinedTable$language)
+
+# Filter out non-English-related languages
+TargetLanguages <- c("english", "scots", "irish")
+# TargetLanguages <- c("latin")
+CombinedTable <- CombinedTable[CombinedTable$language %in% TargetLanguages, ]
+
+```
+
+
+Removing non-English comments 2 (another option with a different package)
+```{r}
+
+# Detect language for each row in the TextColumn
+#     CombinedTable$Language2 <-cld2::detect_language(CombinedTable$WrestlersComment)
+
+# Filter out non-English-related languages
+#     TargetLanguages <- c("en")
+#     CombinedTable <- CombinedTable[CombinedTable$Language2 %in% TargetLanguages, ]
+
+```
+
+## Task 2
+
+Perform any two reasonable forms of sentiment analysis. What is the relationship between a reviewer's sentiment and their rating?
+
+Analysis 1
+```{r}
+CombinedTable$id <- 1:nrow(CombinedTable)
+
+tokens <- unnest_tokens(tbl = CombinedTable, output = word, input = WrestlersComment)
+
+SentimentSummary <- tokens %>%
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(id, WrestlersName, .drop = F) %>% 
+  summarize(n = n(), sentSum = sum(value) ) %>% 
+  mutate(sentiment = sentSum / n)
+
+
+CombinedTable <- inner_join(CombinedTable, SentimentSummary, by = "id", copy = TRUE)
+
+#clean table
+CombinedTable <- CombinedTable[,c(1,2,3,4,5,6,8,9,10)]
+
+
+```
+
+Analysis 2
+```{r}
+
+sent_score2 <- sapply(CombinedTable$WrestlersComment, function(x) 
+                             mean(sentiment(x)$sentiment, 
+                                  polarity_dt = lexicon::hash_sentiment_jockers_rinker)
+                      )
+
+sent_score2 <- as.data.frame(sent_score2)
+
+CombinedTable <- cbind(CombinedTable, sent_score2)
+
+```
+
+Overall Sentiment
+```{r}
+
+tokens <- tibble(text = CombinedTable$WrestlersComment) %>%
+  unnest_tokens(tbl = ., output = word, input = text)
+
+tokens %>%
+  inner_join(get_sentiments("afinn")) %>% 
+  summarize(n = nrow(.), sentSum = sum(value)) %>% 
+  mutate(sentiment = sentSum / n)
+
+```
+
+Relationship 1
+```{r}
+
+cor <- cor(CombinedTable$sent_score2, CombinedTable$WrestlersRating, use="complete.obs")
+
+print(cor)
+
+
+```
+
+
+Relationship 2
+```{r}
+
+cor2 <- cor(CombinedTable$sentiment, CombinedTable$WrestlersRating, use="complete.obs")
+
+print(cor2)
+
+```
+
+The relationship between sentiment and rating is a posotive one, however it is not that strong. My assumption is that becasue the source is the top 100 mathces, the sentiment and ratings are all bias toward the top and make it difficult to get an accurate correlation between the two
+
+## Task 3
+
+Perform any type of topic modeling on the comments. What are the main topics of the comments? How can you use those topics to understand what people value?
+
+```{r}
+
+model_data <- CombinedTable
+
+# this is extra  
+#.              Encoding(model_data$WrestlersComment) <- "UTF-8"
+#.              
+#.              model_data$WrestlersComment <- gsub(".*\\sWrestlersComment\\s", "", model_data$WrestlersComment)
+#.              
+#.              model_data$WrestlersComment <- gsub(
+#.                "see .* live get tickets as low as \\d+", 
+#.                "", 
+#.                model_data$WrestlersComment
+#.              )
+#.              
+#.              rm(all_WrestlersComment_info)
+#.              
+#.              colnames(model_data)[colnames(model_data) == "week"] <- "year"
+
+model_data$WrestlersComment_clean <- model_data$WrestlersComment %>% 
+  textclean::replace_contraction() %>% 
+  str_replace_all(., "\n", " ") %>% 
+  str_replace_all(., "(\\[.*?\\])", "") %>% 
+  str_squish() %>% 
+  gsub("([a-z])([A-Z])", "\\1 \\2", .) %>% 
+  tolower() %>% 
+  textstem::lemmatize_strings(.) %>% 
+  removeWords(stopwords("SMART"))
+
+# creates the corpus with document variables except for the "text" (is extra)
+#.       comments_corpus <- corpus(model_data, text_field = "WrestlersComment_clean")
+#.       comments_token <- tokens(comments_corpus, 
+#.                             remove_punct = TRUE, 
+#.                             remove_symbols = TRUE,
+#.                             remove_numbers = TRUE)
+#.       comments_dfm <- dfm(comments_token)
+#.       comments_dfm <- dfm_trim(comments_dfm, sparsity = 0.990)
+#.       comments_stm <- convert(comments_dfm, to = "stm")
+#.       docs_stm <- comments_stm$documents 
+#.       vocab_stm <- comments_stm$vocab    
+#.       meta_stm <- comments_stm$meta
+#        meta_stm$text <- model_data$WrestlersComment
+
+commentsProcess <- textProcessor(documents = model_data$WrestlersComment_clean, 
+                                 metadata = model_data, 
+                                 language = "en")
+
+commentsPrep <- prepDocuments(documents = docs_stm, 
+                           vocab = vocab_stm,
+                           meta = meta_stm)
+
+save(commentsPrep, meta_stm, docs_stm, comments_dfm, 
+     file = "~/Desktop/GraduateSchool/S3/Unstructured/Data/all_WrestlersComment.RData")
+
+```
+
+
+```{r}
+kTest <- searchK(documents = commentsPrep$documents, 
+             vocab = commentsPrep$vocab, 
+             K = c(3, 4, 5, 10, 20), verbose = F)
+
+plot(kTest)
+
+```
+
+I will still use 5 topics to keep the model useful and for practive. However, the ktest suggests there is really only 1, maybe 2, topics across the comments. This is not surprising as the comments are all coming from the same source and are all about the top 100 matches.
+
+```{r}
+load("~/Desktop/GraduateSchool/S3/Unstructured/Data/all_WrestlersComment.RData")
+topics5 <- stm(documents = commentsPrep$documents, 
+             vocab = commentsPrep$vocab, seed = 1001,
+             K = 5, verbose = FALSE)
+
+plot(topics5, type = "summary", xlim = c(0, 0.5))
+
+labelTopics(topics5)
+
+```
+
+The main topics that arise surround the theme of the wrestler, the match, and the WWE itself. This is not surprising as the comments are all originating from similar sources. This does help us confidently say the topics are important to viewers and should be the focus of promotion.
+
